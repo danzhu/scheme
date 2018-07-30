@@ -11,7 +11,7 @@ import Control.Applicative ((<|>), many, optional, liftA2)
 import Control.Monad (void)
 
 newtype Name = Name String
-             deriving (Eq)
+             deriving (Eq, Ord)
 
 data Node = Lambda [Name] Node
           | Apply Node [Node]

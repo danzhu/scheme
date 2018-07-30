@@ -1,6 +1,6 @@
 module Runtime (
   Value (..),
-  Func,
+  Proc,
   Env,
 
   format,
@@ -9,10 +9,13 @@ module Runtime (
   ) where
 
 import Ast
+import Lib
 
 import Control.Monad.Except (throwError)
+import Data.Map (Map)
+import qualified Data.Map as Map
 
-data Value = VFunc Name Func
+data Value = VProc Name Proc
            | VInt Int
            | VBool Bool
            | VString String
@@ -22,17 +25,17 @@ data Value = VFunc Name Func
 
 type Run = Either String
 
-type Func = [Value] -> Run Value
+type Proc = [Value] -> Run Value
 
-type Env = [(Name, Value)]
+type Env = Map Name Value
 
 format :: Value -> String
 format v | quo v     = '\'' : format' v
          | otherwise = format' v
 
 format' :: Value -> String
-format' (VFunc (Name "") _)   = "#<procedure>"
-format' (VFunc (Name name) _) = "#<procedure:" ++ name ++ ">"
+format' (VProc (Name "") _)   = "#<procedure>"
+format' (VProc (Name name) _) = "#<procedure:" ++ name ++ ">"
 format' (VInt n)              = show n
 format' (VBool True)          = "#t"
 format' (VBool False)         = "#f"
@@ -45,7 +48,7 @@ format' (VCons v vs)          = "(" ++ format' v ++ showRest vs ++ ")"
         showRest xs           = " . " ++ format' xs
 
 quo :: Value -> Bool
-quo VFunc{}   = False
+quo VProc{}   = False
 quo VInt{}    = False
 quo VBool{}   = False
 quo VString{} = False
@@ -54,42 +57,43 @@ quo VNull{}   = True
 quo VCons{}   = True
 
 globals :: Env
-globals = [ var "null"       $ VNull
+globals = Map.fromList
+  [ var "null"        $ VNull
 
-          , func "function?" $ cond func_
-          , func "integer?"  $ cond integer_
-          , func "boolean?"  $ cond boolean_
-          , func "string?"   $ cond string_
-          , func "symbol?"   $ cond symbol_
-          , func "null?"     $ cond null_
-          , func "pair?"     $ cond pair_
+  , pro "procedure?" $ cond procedure_
+  , pro "integer?"   $ cond integer_
+  , pro "boolean?"   $ cond boolean_
+  , pro "string?"    $ cond string_
+  , pro "symbol?"    $ cond symbol_
+  , pro "null?"      $ cond null_
+  , pro "pair?"      $ cond pair_
 
-          , func "apply"     $ binary apply
+  , pro "apply"      $ binary apply
 
-          , func "+"         $ arith $ pure . sum
-          , func "-"         $ arith minus
-          , func "*"         $ arith $ pure . product
-          , func "/"         $ arith divide
-          , func "modulo"    $ arith $ binary $ (pure .) . mod
-          , func "="         $ comp (==)
-          , func "<"         $ comp (<)
-          , func "<="        $ comp (<=)
-          , func ">"         $ comp (>)
-          , func ">="        $ comp (>=)
+  , pro "+"          $ arith $ pure . sum
+  , pro "-"          $ arith minus
+  , pro "*"          $ arith $ pure . product
+  , pro "/"          $ arith divide
+  , pro "modulo"     $ arith $ binary $ (pure .) . mod
+  , pro "="          $ comp (==)
+  , pro "<"          $ comp (<)
+  , pro "<="         $ comp (<=)
+  , pro ">"          $ comp (>)
+  , pro ">="         $ comp (>=)
 
-          , func "if"        $ ternary if_
-          , func "and"       $ logic $ pure . and
-          , func "or"        $ logic $ pure . or
-          , func "not"       $ logic $ unary $ pure . not
+  , pro "if"         $ ternary if_
+  , pro "and"        $ logic $ pure . and
+  , pro "or"         $ logic $ pure . or
+  , pro "not"        $ logic $ unary $ pure . not
 
-          , func "cons"      $ binary $ (pure .) . VCons
-          , func "car"       $ unary car
-          , func "cdr"       $ unary cdr
-          , func "list"      $ list
-          , func "list*"     $ list_
-          ]
-  where func name fn = (Name name, VFunc (Name name) fn)
-        var name val = (Name name, val)
+  , pro "cons"       $ binary $ (pure .) . VCons
+  , pro "car"        $ unary car
+  , pro "cdr"        $ unary cdr
+  , pro "list"       $ list
+  , pro "list*"      $ list_
+  ]
+  where var name val = (Name name, val)
+        pro name fn = (Name name, VProc (Name name) fn)
 
         unary :: (a -> Run b) -> [a] -> Run b
         unary fn [a]         = fn a
@@ -106,47 +110,45 @@ globals = [ var "null"       $ VNull
         compList fn (a : as@(b : _)) = (fn a b &&) <$> compList fn as
         compList _ _                 = throwError "expect at least 2 arguments"
 
-        cond :: (Value -> Bool) -> Func
+        cond :: (Value -> Bool) -> Proc
         cond fn  = unary $ pure . VBool . fn
-        arith :: ([Int] -> Run Int) -> Func
+        arith :: ([Int] -> Run Int) -> Proc
         arith fn vs = VInt <$> (fn =<< mapM toInt vs)
-        comp :: (Int -> Int -> Bool) -> Func
+        comp :: (Int -> Int -> Bool) -> Proc
         comp fn vs = VBool <$> (compList fn =<< mapM toInt vs)
-        logic :: ([Bool] -> Run Bool) -> Func
+        logic :: ([Bool] -> Run Bool) -> Proc
         logic fn vs = VBool <$> (fn =<< mapM toBool vs)
 
-func_ :: Value -> Bool
-func_ (VFunc _ _) = True
-func_ _           = False
+procedure_ :: Value -> Bool
+procedure_ VProc{} = True
+procedure_ _       = False
 
 integer_ :: Value -> Bool
-integer_ (VInt _) = True
-integer_ _        = False
+integer_ VInt{} = True
+integer_ _      = False
 
 boolean_ :: Value -> Bool
-boolean_ (VBool _) = True
-boolean_ _         = False
+boolean_ VBool{} = True
+boolean_ _       = False
 
 string_ :: Value -> Bool
-string_ (VString _) = True
-string_ _           = False
+string_ VString{} = True
+string_ _         = False
 
 symbol_ :: Value -> Bool
-symbol_ (VSymbol _) = True
-symbol_ _           = False
+symbol_ VSymbol{} = True
+symbol_ _         = False
 
 null_ :: Value -> Bool
-null_ VNull = True
-null_ _     = False
+null_ VNull{} = True
+null_ _       = False
 
 pair_ :: Value -> Bool
-pair_ (VCons _ _) = True
-pair_ _           = False
+pair_ VCons{} = True
+pair_ _       = False
 
 apply :: Value -> Value -> Run Value
-apply fn args = do fn' <- toFunc fn
-                   args' <- toList args
-                   fn' args'
+apply fn args = (=<< toList args) =<< toProc fn
 
 minus :: [Int] -> Run Int
 minus [i]      = pure $ -i
@@ -179,9 +181,9 @@ list_ [v]      = pure v
 list_ (v : vs) = VCons v <$> list_ vs
 list_ []       = throwError "expect at least 1 argument"
 
-toFunc :: Value -> Run Func
-toFunc (VFunc _ fn) = pure fn
-toFunc _            = throwError "expect function argument"
+toProc :: Value -> Run Proc
+toProc (VProc _ fn) = pure fn
+toProc _            = throwError "expect function argument"
 
 toInt :: Value -> Run Int
 toInt (VInt i) = pure i
@@ -197,25 +199,19 @@ toList (VCons v vs) = (v :) <$> toList vs
 toList _            = throwError "expect list argument"
 
 eval :: Env -> Node -> Run Value
-eval env (Lambda params body) = pure $ VFunc (Name "") fn
-  where bind :: [Name] -> [Value] -> Run [(Name, Value)]
-        bind [] []             = pure env
-        bind (x : xs) (y : ys) = do rest <- bind xs ys
-                                    pure $ (x, y) : rest
-        bind _ _               = throwError "incorrect number of arguments"
-        fn args = flip eval body =<< bind params args
-eval env (Apply fn args)      = do res <- eval env fn
-                                   case res of
-                                     VFunc _ f -> f =<< mapM (eval env) args
-                                     _         -> error "application requires function type"
-eval env (Let binds body)     = flip eval body =<< (++ env) <$> mapM evalArg binds
+eval env (Lambda params body) = pure $ VProc (Name "") fn
+  where fn args = do args' <- zips params args `orErr` "incorrect number of arguments"
+                     let env' = Map.fromList args' `Map.union` env
+                     eval env' body
+eval env (Apply fn args)      = (=<< mapM (eval env) args) =<< toProc =<< eval env fn
+eval env (Let binds body)     = flip eval body . (`Map.union` env) . Map.fromList =<< mapM evalArg binds
   where evalArg (name, node) = do val <- eval env node
                                   pure (name, val)
 eval env (Var name@(Name n))
-  | Just v <- lookup name env = pure v
-  | otherwise                 = throwError $ "undefined identifier: " ++ n
-eval env (List lst)           = list =<< mapM (eval env) lst
-eval _ (LitInt val)           = pure $ VInt val
-eval _ (LitBool val)          = pure $ VBool val
-eval _ (LitString val)        = pure $ VString val
-eval _ (LitSymbol val)        = pure $ VSymbol val
+  | Just v <- Map.lookup name env = pure v
+  | otherwise                     = throwError $ "undefined identifier: " ++ n
+eval env (List lst)               = list =<< mapM (eval env) lst
+eval _ (LitInt val)               = pure $ VInt val
+eval _ (LitBool val)              = pure $ VBool val
+eval _ (LitString val)            = pure $ VString val
+eval _ (LitSymbol val)            = pure $ VSymbol val
